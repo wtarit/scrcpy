@@ -28,6 +28,7 @@ src = [
     'src/opengl.c',
     'src/options.c',
     'src/packet_merger.c',
+    'src/raw_net_sink.c',
     'src/receiver.c',
     'src/recorder.c',
     'src/scrcpy.c',

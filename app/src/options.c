@@ -47,6 +47,7 @@ const struct scrcpy_options scrcpy_options_default = {
     },
     .tunnel_host = 0,
     .tunnel_port = 0,
+    .raw_video_tcp_port = 0,
     .shortcut_mods = SC_SHORTCUT_MOD_LALT | SC_SHORTCUT_MOD_LSUPER,
     .max_size = 0,
     .video_bit_rate = 0,
