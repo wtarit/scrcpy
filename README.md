@@ -2,6 +2,11 @@
 source for the project. Do not download releases from random websites, even if
 their name contains `scrcpy`.**
 
+> **Fork:** This repository adds **rawstream** (`--raw-video-tcp`) for teeing raw
+> encoded video packets (H.264, H.265, or AV1 via `--video-codec`) to a loopback
+> TCP port. It is intended for use with
+> [scrcpy-obs](https://github.com/wtarit/scrcpy-obs).
+
 # scrcpy (v4.0)
 
 <img src="app/data/scrcpy.svg" width="128" height="128" alt="scrcpy" align="right" />
