@@ -21,6 +21,7 @@
 #include "demuxer.h"
 #include "events.h"
 #include "file_pusher.h"
+#include "raw_net_sink.h"
 #include "keyboard_sdk.h"
 #include "mouse_sdk.h"
 #include "recorder.h"
@@ -55,6 +56,7 @@ struct scrcpy {
     struct sc_decoder video_decoder;
     struct sc_decoder audio_decoder;
     struct sc_recorder recorder;
+    struct sc_raw_net_sink raw_net_sink;
     struct sc_delay_buffer video_buffer;
 #ifdef HAVE_V4L2
     struct sc_v4l2_sink v4l2_sink;
@@ -330,6 +332,7 @@ scrcpy(struct scrcpy_options *options) {
 #endif
     bool video_demuxer_started = false;
     bool audio_demuxer_started = false;
+    bool raw_net_sink_initialized = false;
 #ifdef HAVE_USB
     bool aoa_hid_initialized = false;
     bool keyboard_aoa_initialized = false;
@@ -529,6 +532,15 @@ scrcpy(struct scrcpy_options *options) {
         sc_decoder_init(&s->video_decoder, "video");
         sc_packet_source_add_sink(&s->video_demuxer.packet_source,
                                   &s->video_decoder.packet_sink);
+    }
+    if (options->video && options->raw_video_tcp_port) {
+        if (!sc_raw_net_sink_init(&s->raw_net_sink,
+                                  options->raw_video_tcp_port)) {
+            goto end;
+        }
+        raw_net_sink_initialized = true;
+        sc_packet_source_add_sink(&s->video_demuxer.packet_source,
+                                  &s->raw_net_sink.packet_sink);
     }
     if (needs_audio_decoder) {
         sc_decoder_init(&s->audio_decoder, "audio");
@@ -996,6 +1008,10 @@ end:
     }
     if (recorder_initialized) {
         sc_recorder_destroy(&s->recorder);
+    }
+
+    if (raw_net_sink_initialized) {
+        sc_raw_net_sink_destroy(&s->raw_net_sink);
     }
 
     if (file_pusher_initialized) {

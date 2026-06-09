@@ -109,6 +109,7 @@ enum {
     OPT_KEEP_ACTIVE,
     OPT_BACKGROUND_COLOR,
     OPT_RENDER_FIT,
+    OPT_RAW_VIDEO_TCP,
 };
 
 struct sc_option {
@@ -777,6 +778,17 @@ static const struct sc_option options[] = {
         .longopt_id = OPT_RAW_KEY_EVENTS,
         .longopt = "raw-key-events",
         .text = "Inject key events for all input keys, and ignore text events."
+    },
+    {
+        .longopt_id = OPT_RAW_VIDEO_TCP,
+        .longopt = "raw-video-tcp",
+        .argdesc = "port",
+        .text = "Forward the raw encoded video packet stream to a TCP client "
+                "connecting on 127.0.0.1:<port>. Wire format per packet: "
+                "[pts:u64 BE | size:u32 BE | NAL...]. A 12-byte prelude "
+                "(codec_id, width, height — all u32 BE) is sent once on "
+                "connect. Intended for embedders (e.g. OBS plugin); scrcpy "
+                "blocks on accept() before starting the stream.",
     },
     {
         .longopt_id = OPT_RECORD_FORMAT,
@@ -2646,6 +2658,15 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
                 }
                 opts->key_inject_mode = SC_KEY_INJECT_MODE_RAW;
                 break;
+            case OPT_RAW_VIDEO_TCP:
+                if (!parse_port(optarg, &opts->raw_video_tcp_port)) {
+                    return false;
+                }
+                if (opts->raw_video_tcp_port == 0) {
+                    LOGE("--raw-video-tcp port must be non-zero");
+                    return false;
+                }
+                break;
             case OPT_DISPLAY_ORIENTATION:
                 if (!parse_orientation(optarg, &opts->display_orientation)) {
                     return false;
@@ -2972,7 +2993,7 @@ parse_args_with_getopt(struct scrcpy_cli_args *args, int argc, char *argv[],
     }
 
     if (opts->video && !opts->video_playback && !opts->record_filename
-            && !v4l2) {
+            && !v4l2 && !opts->raw_video_tcp_port) {
         LOGI("No video playback, no recording, no V4L2 sink: video disabled");
         opts->video = false;
     }
