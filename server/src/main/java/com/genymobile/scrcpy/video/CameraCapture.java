@@ -55,6 +55,7 @@ public class CameraCapture extends SurfaceCapture {
     };
 
     private static final float ZOOM_FACTOR = 1 + 1 / 16f;
+    private static final long TUNING_POLL_MS = 300;
 
     private final String explicitCameraId;
     private final CameraFacing cameraFacing;
@@ -89,6 +90,8 @@ public class CameraCapture extends SurfaceCapture {
     private boolean started;
     private CaptureRequest.Builder requestBuilder;
     private CameraCaptureSession currentSession;
+    private CameraCharacteristics characteristics;
+    private long tuningStamp = Long.MIN_VALUE;
 
     public CameraCapture(Options options) {
         this.explicitCameraId = options.getCameraId();
@@ -298,7 +301,7 @@ public class CameraCapture extends SurfaceCapture {
 
                 CameraManager cameraManager = ServiceManager.getCameraManager();
                 try {
-                    CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(cameraId);
+                    characteristics = cameraManager.getCameraCharacteristics(cameraId);
                     zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE);
                 } catch (CameraAccessException e) {
                     Ln.w("Could not get camera characteristics");
@@ -321,9 +324,16 @@ public class CameraCapture extends SurfaceCapture {
                         requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
                     }
 
+                    tuningStamp = CameraTuning.stamp();
+                    CameraTuning tuning = CameraTuning.read();
+                    if (tuning != null) {
+                        tuning.apply(requestBuilder, characteristics, fps);
+                    }
+
                     CaptureRequest request = requestBuilder.build();
                     setRepeatingRequest(session, request);
                     currentSession = session;
+                    cameraHandler.postDelayed(CameraCapture.this::pollTuning, TUNING_POLL_MS);
                 } catch (CameraAccessException e) {
                     Ln.e("Camera error", e);
                     disconnected.set(true);
@@ -461,6 +471,29 @@ public class CameraCapture extends SurfaceCapture {
     @Override
     public boolean isClosed() {
         return disconnected.get();
+    }
+
+    private void pollTuning() {
+        assertCameraThread();
+        if (!started || currentSession == null || requestBuilder == null) {
+            // Stopped: do not reschedule
+            return;
+        }
+
+        long stamp = CameraTuning.stamp();
+        if (stamp != tuningStamp) {
+            tuningStamp = stamp;
+            CameraTuning tuning = CameraTuning.read();
+            if (tuning != null) {
+                try {
+                    tuning.apply(requestBuilder, characteristics, fps);
+                    setRepeatingRequest(currentSession, requestBuilder.build());
+                } catch (CameraAccessException | IllegalStateException e) {
+                    Ln.e("Camera error", e);
+                }
+            }
+        }
+        cameraHandler.postDelayed(this::pollTuning, TUNING_POLL_MS);
     }
 
     public void setTorchEnabled(boolean enabled) {
