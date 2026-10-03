@@ -56,6 +56,7 @@ public class CameraCapture extends SurfaceCapture {
 
     private static final float ZOOM_FACTOR = 1 + 1 / 16f;
     private static final long TUNING_POLL_MS = 300;
+    private static final long LOCK_DELAY_MS = 2500;
 
     private final String explicitCameraId;
     private final CameraFacing cameraFacing;
@@ -92,6 +93,16 @@ public class CameraCapture extends SurfaceCapture {
     private CameraCaptureSession currentSession;
     private CameraCharacteristics characteristics;
     private long tuningStamp = Long.MIN_VALUE;
+    private long tuningStartMs;
+    private CameraTuning lastTuning;
+    private boolean lockPending;
+    // Auto white balance state of the latest frame, and the values frozen as the base of the manual white balance
+    private volatile android.hardware.camera2.params.RggbChannelVector lastGains;
+    private volatile android.hardware.camera2.params.ColorSpaceTransform lastCcm;
+    private volatile boolean manualWbActive;
+    private long lastInfoMs;
+    private android.hardware.camera2.params.RggbChannelVector baseGains;
+    private android.hardware.camera2.params.ColorSpaceTransform baseCcm;
 
     public CameraCapture(Options options) {
         this.explicitCameraId = options.getCameraId();
@@ -324,10 +335,11 @@ public class CameraCapture extends SurfaceCapture {
                         requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
                     }
 
+                    tuningStartMs = android.os.SystemClock.elapsedRealtime();
                     tuningStamp = CameraTuning.stamp();
                     CameraTuning tuning = CameraTuning.read();
                     if (tuning != null) {
-                        tuning.apply(requestBuilder, characteristics, fps);
+                        applyTuning(tuning);
                     }
 
                     CaptureRequest request = requestBuilder.build();
@@ -454,6 +466,21 @@ public class CameraCapture extends SurfaceCapture {
             }
 
             @Override
+            public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request,
+                    android.hardware.camera2.TotalCaptureResult result) {
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (now - lastInfoMs > 700) {
+                    lastInfoMs = now;
+                    CameraTuning.writeInfo(characteristics, result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY),
+                            result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME));
+                }
+                if (!manualWbActive) {
+                    lastGains = result.get(android.hardware.camera2.CaptureResult.COLOR_CORRECTION_GAINS);
+                    lastCcm = result.get(android.hardware.camera2.CaptureResult.COLOR_CORRECTION_TRANSFORM);
+                }
+            }
+
+            @Override
             public void onCaptureFailed(CameraCaptureSession session, CaptureRequest request, CaptureFailure failure) {
                 Ln.w("Camera capture failed: frame " + failure.getFrameNumber());
             }
@@ -473,6 +500,31 @@ public class CameraCapture extends SurfaceCapture {
         return disconnected.get();
     }
 
+    private void applyTuning(CameraTuning tuning) {
+        assertCameraThread();
+        lastTuning = tuning;
+        // Give auto white balance some time to converge before locking it
+        boolean allowLock = android.os.SystemClock.elapsedRealtime() - tuningStartMs > LOCK_DELAY_MS;
+        lockPending = tuning.wantsLock() && (!allowLock || (tuning.isManualWb() && baseGains == null));
+        if (tuning.isManualWb()) {
+            if (baseGains == null && allowLock && lastGains != null && lastCcm != null) {
+                baseGains = lastGains;
+                baseCcm = lastCcm;
+            }
+            manualWbActive = baseGains != null;
+        } else {
+            baseGains = null;
+            baseCcm = null;
+            manualWbActive = false;
+        }
+        tuning.apply(requestBuilder, characteristics, fps, allowLock, baseGains, baseCcm);
+        if (tuning.zoom >= 0) {
+            zoom = clampZoom(tuning.zoom > 0 ? tuning.zoom : 1);
+            Ln.i("Set camera zoom: " + zoom);
+            requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom);
+        }
+    }
+
     private void pollTuning() {
         assertCameraThread();
         if (!started || currentSession == null || requestBuilder == null) {
@@ -481,12 +533,13 @@ public class CameraCapture extends SurfaceCapture {
         }
 
         long stamp = CameraTuning.stamp();
-        if (stamp != tuningStamp) {
+        boolean lockNow = lockPending && android.os.SystemClock.elapsedRealtime() - tuningStartMs > LOCK_DELAY_MS;
+        if (stamp != tuningStamp || lockNow) {
             tuningStamp = stamp;
-            CameraTuning tuning = CameraTuning.read();
+            CameraTuning tuning = lockNow ? lastTuning : CameraTuning.read();
             if (tuning != null) {
                 try {
-                    tuning.apply(requestBuilder, characteristics, fps);
+                    applyTuning(tuning);
                     setRepeatingRequest(currentSession, requestBuilder.build());
                 } catch (CameraAccessException | IllegalStateException e) {
                     Ln.e("Camera error", e);
